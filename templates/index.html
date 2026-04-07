@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lunar Constellation Simulator</title>
+    <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+    <div class="app-shell">
+        <aside class="control-panel">
+            <div class="panel-card hero-card">
+                <p class="eyebrow">Python backend + browser renderer</p>
+                <h1>Lunar Constellation Simulator</h1>
+                <p class="panel-subtitle">
+                    Switch between focused tabs so the controls stay compact while the Moon view remains visible.
+                </p>
+            </div>
+
+            <div class="tabs-shell">
+                <div class="tab-bar" role="tablist" aria-label="Simulator sections">
+                    <button class="tab-btn active" data-tab-target="satelliteTab" role="tab" aria-selected="true">Satellites</button>
+                    <button class="tab-btn" data-tab-target="baseStationTab" role="tab" aria-selected="false">Base station</button>
+                    <button class="tab-btn" data-tab-target="signalTab" role="tab" aria-selected="false">Signal graph</button>
+                </div>
+
+                <div class="tab-panels">
+                    <section id="satelliteTab" class="tab-panel active" role="tabpanel">
+                        <div class="panel-card control-card">
+                            <div class="card-header">
+                                <h2>Satellite controls</h2>
+                                <p>Deploy the fleet, change the physics step, and control playback speed.</p>
+                            </div>
+
+                            <label for="satCount">Number of satellites</label>
+                            <input id="satCount" type="range" min="1" max="500" value="100" step="1" />
+                            <div class="value-row"><span>Current</span><strong id="satCountValue">100</strong></div>
+
+                            <label for="physicsDt">Physics dt (seconds)</label>
+                            <input id="physicsDt" type="range" min="0.1" max="60" value="1" step="0.1" />
+                            <div class="value-row"><span>Current</span><strong id="physicsDtValue">1.0 s</strong></div>
+
+                            <label for="simSpeed">Simulation speed</label>
+                            <input id="simSpeed" type="range" min="1" max="100" value="5" step="1" />
+                            <div class="value-row"><span>Current</span><strong id="simSpeedValue">5x</strong></div>
+
+                            <div class="button-row">
+                                <button id="deployButton" class="primary-btn">Deploy fleet</button>
+                                <button id="pauseButton" class="secondary-btn">Pause</button>
+                            </div>
+                        </div>
+
+                        <div class="panel-card">
+                            <div class="card-header">
+                                <h2>Constellation summary</h2>
+                                <p>Quick view of the currently active network.</p>
+                            </div>
+
+                            <div class="stats-grid compact-grid">
+                                <div class="stat-box">
+                                    <span>Connected</span>
+                                    <strong id="connectedStat">0 / 0</strong>
+                                </div>
+                                <div class="stat-box">
+                                    <span>Tracking</span>
+                                    <strong id="trackingStat">None</strong>
+                                </div>
+                                <div class="stat-box">
+                                    <span>Strongest signal</span>
+                                    <strong id="signalStat">No connection</strong>
+                                </div>
+                                <div class="stat-box">
+                                    <span>Sim time</span>
+                                    <strong id="timeStat">0.0 s</strong>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="panel-card info-card">
+                            <h2>View controls</h2>
+                            <p>Drag inside the canvas to rotate the camera. Use the mouse wheel to zoom in and out.</p>
+                            <div class="legend">
+                                <span><i class="dot green"></i> Satellite in line of sight</span>
+                                <span><i class="dot red"></i> Satellite out of view</span>
+                                <span><i class="dot cyan"></i> Lunar base station marker</span>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section id="baseStationTab" class="tab-panel" role="tabpanel">
+                        <div class="panel-card control-card">
+                            <div class="card-header">
+                                <h2>Base station coordinates</h2>
+                                <p>Move the lunar ground station by latitude and longitude. Changes apply automatically while you drag or type.</p>
+                            </div>
+
+                            <label for="stationLatitude">Latitude (degrees)</label>
+                            <input id="stationLatitude" type="range" min="-90" max="90" value="90" step="1" />
+                            <div class="value-input-row">
+                                <span>Live value</span>
+                                <div class="input-inline">
+                                    <input id="stationLatitudeNumber" type="number" min="-90" max="90" step="0.1" value="90" />
+                                    <span>deg</span>
+                                </div>
+                            </div>
+
+                            <label for="stationLongitude">Longitude (degrees)</label>
+                            <input id="stationLongitude" type="range" min="-180" max="180" value="0" step="1" />
+                            <div class="value-input-row">
+                                <span>Live value</span>
+                                <div class="input-inline">
+                                    <input id="stationLongitudeNumber" type="number" min="-180" max="180" step="0.1" value="0" />
+                                    <span>deg</span>
+                                </div>
+                            </div>
+
+                            <div class="live-hint">
+                                <span class="live-dot"></span>
+                                <span>Live update mode enabled</span>
+                            </div>
+                        </div>
+
+                        <div class="panel-card">
+                            <div class="card-header">
+                                <h2>Current base station</h2>
+                                <p>The blue marker on the Moon updates automatically as these values change.</p>
+                            </div>
+                            <div class="detail-list">
+                                <div class="detail-row">
+                                    <span>Coordinates</span>
+                                    <strong id="baseStationStat">Lat 90.0°, Lon 0.0°</strong>
+                                </div>
+                                <div class="detail-row">
+                                    <span>Link status</span>
+                                    <strong id="baseStatusStat">No connection</strong>
+                                </div>
+                                <div class="detail-row">
+                                    <span>Tracked link distance</span>
+                                    <strong id="distanceStat">--</strong>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="panel-card info-card">
+                            <h2>Texture files</h2>
+                            <p>
+                                Put your texture images in <code>static/assets/</code>. Recommended names are
+                                <code>moon_texture.jpg</code> and <code>earth_texture.jpg</code>.
+                                PNG also works.
+                            </p>
+                        </div>
+                    </section>
+
+                    <section id="signalTab" class="tab-panel" role="tabpanel">
+                        <div class="panel-card signal-summary-card">
+                            <div class="card-header">
+                                <h2>Signal summary</h2>
+                                <p>Running history of the strongest visible link over simulation time.</p>
+                            </div>
+
+                            <div id="connectionBadge" class="status-pill disconnected">No connection</div>
+
+                            <div class="stats-grid compact-grid">
+                                <div class="stat-box">
+                                    <span>Latest strongest</span>
+                                    <strong id="signalGraphLatest">No connection</strong>
+                                </div>
+                                <div class="stat-box">
+                                    <span>Absolute |dBm|</span>
+                                    <strong id="signalAbsStat">--</strong>
+                                </div>
+                                <div class="stat-box">
+                                    <span>Tracking</span>
+                                    <strong id="signalTrackingStat">None</strong>
+                                </div>
+                                <div class="stat-box">
+                                    <span>Samples</span>
+                                    <strong id="sampleCountStat">0</strong>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="panel-card graph-card">
+                            <div class="graph-header">
+                                <div>
+                                    <h2>Strongest signal graph</h2>
+                                    <p>Horizontal axis is simulation time. Vertical axis uses absolute signal value <code>|dBm|</code>.</p>
+                                </div>
+                            </div>
+                            <canvas id="signalCanvas"></canvas>
+                            <p class="graph-note">Because the raw dBm values are negative, the graph uses <code>|dBm|</code>. Smaller values still mean a stronger raw signal.</p>
+                        </div>
+                    </section>
+                </div>
+            </div>
+        </aside>
+
+        <main class="viewer-panel">
+            <div class="canvas-wrap">
+                <canvas id="simCanvas"></canvas>
+                <div class="canvas-overlay top-left">Drag to orbit the camera · Mouse wheel to zoom</div>
+                <div class="canvas-overlay top-right">Moon-centered view with Earth backdrop</div>
+            </div>
+        </main>
+    </div>
+
+    <script src="/app.js"></script>
+</body>
+</html>
