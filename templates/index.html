@@ -13,7 +13,7 @@
                 <p class="eyebrow">Python backend + browser renderer</p>
                 <h1>Lunar Constellation Simulator</h1>
                 <p class="panel-subtitle">
-                    Switch between focused tabs so the controls stay compact while the Moon view remains visible.
+                    Keep one focused tab open at a time while the Moon view stays large and responsive.
                 </p>
             </div>
 
@@ -29,12 +29,28 @@
                         <div class="panel-card control-card">
                             <div class="card-header">
                                 <h2>Satellite controls</h2>
-                                <p>Deploy the fleet, change the physics step, and control playback speed.</p>
+                                <p>Choose fleet size, orbital altitude mode, orbit overlays, and playback speed.</p>
                             </div>
 
                             <label for="satCount">Number of satellites</label>
                             <input id="satCount" type="range" min="1" max="500" value="100" step="1" />
                             <div class="value-row"><span>Current</span><strong id="satCountValue">100</strong></div>
+
+                            <label for="altitudeSlider">Common altitude (km)</label>
+                            <input id="altitudeSlider" type="range" min="500" max="2000" value="1200" step="10" />
+                            <div class="value-row"><span>Current</span><strong id="altitudeValue">1200 km</strong></div>
+
+                            <label class="checkbox-row" for="randomAltitudeToggle">
+                                <input id="randomAltitudeToggle" type="checkbox" />
+                                <span>Randomize altitudes on next deploy</span>
+                            </label>
+                            <p id="altitudeModeHint" class="small-note">With this off, every satellite uses the same altitude while orbital planes remain random.</p>
+
+                            <label class="checkbox-row" for="orbitLinesToggle">
+                                <input id="orbitLinesToggle" type="checkbox" />
+                                <span>Show orbit lines</span>
+                            </label>
+                            <p class="small-note">Orbit lines are a visual aid. Satellite physics stay unchanged, but altitude is visually exaggerated slightly so the 500 km to 2000 km difference is easier to see.</p>
 
                             <label for="physicsDt">Physics dt (seconds)</label>
                             <input id="physicsDt" type="range" min="0.1" max="60" value="1" step="0.1" />
@@ -53,7 +69,7 @@
                         <div class="panel-card">
                             <div class="card-header">
                                 <h2>Constellation summary</h2>
-                                <p>Quick view of the currently active network.</p>
+                                <p>Quick overview of the active network.</p>
                             </div>
 
                             <div class="stats-grid compact-grid">
@@ -78,11 +94,12 @@
 
                         <div class="panel-card info-card">
                             <h2>View controls</h2>
-                            <p>Drag inside the canvas to rotate the camera. Use the mouse wheel to zoom in and out.</p>
+                            <p>Drag inside the canvas to rotate the camera. Use the mouse wheel to zoom toward the Moon without zooming the Earth backdrop.</p>
                             <div class="legend">
                                 <span><i class="dot green"></i> Satellite in line of sight</span>
                                 <span><i class="dot red"></i> Satellite out of view</span>
                                 <span><i class="dot cyan"></i> Lunar base station marker</span>
+                                <span><i class="dot orbit"></i> Orbit line overlay</span>
                             </div>
                         </div>
                     </section>
@@ -91,7 +108,7 @@
                         <div class="panel-card control-card">
                             <div class="card-header">
                                 <h2>Base station coordinates</h2>
-                                <p>Move the lunar ground station by latitude and longitude. Changes apply automatically while you drag or type.</p>
+                                <p>Move the lunar ground station by latitude and longitude. Changes apply live while you drag or type.</p>
                             </div>
 
                             <label for="stationLatitude">Latitude (degrees)</label>
@@ -123,7 +140,7 @@
                         <div class="panel-card">
                             <div class="card-header">
                                 <h2>Current base station</h2>
-                                <p>The blue marker on the Moon updates automatically as these values change.</p>
+                                <p>The blue station model updates immediately on the Moon surface.</p>
                             </div>
                             <div class="detail-list">
                                 <div class="detail-row">
@@ -145,50 +162,32 @@
                             <h2>Texture files</h2>
                             <p>
                                 Put your texture images in <code>static/assets/</code>. Recommended names are
-                                <code>moon_texture.jpg</code> and <code>earth_texture.jpg</code>.
-                                PNG also works.
+                                <code>moon_texture.jpg</code> and <code>earth_texture.jpg</code>. PNG also works.
                             </p>
                         </div>
                     </section>
 
                     <section id="signalTab" class="tab-panel" role="tabpanel">
-                        <div class="panel-card signal-summary-card">
-                            <div class="card-header">
-                                <h2>Signal summary</h2>
-                                <p>Running history of the strongest visible link over simulation time.</p>
-                            </div>
-
-                            <div id="connectionBadge" class="status-pill disconnected">No connection</div>
-
-                            <div class="stats-grid compact-grid">
-                                <div class="stat-box">
-                                    <span>Latest strongest</span>
-                                    <strong id="signalGraphLatest">No connection</strong>
-                                </div>
-                                <div class="stat-box">
-                                    <span>Absolute |dBm|</span>
-                                    <strong id="signalAbsStat">--</strong>
-                                </div>
-                                <div class="stat-box">
-                                    <span>Tracking</span>
-                                    <strong id="signalTrackingStat">None</strong>
-                                </div>
-                                <div class="stat-box">
-                                    <span>Samples</span>
-                                    <strong id="sampleCountStat">0</strong>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="panel-card graph-card">
+                        <div class="panel-card graph-card priority-card">
                             <div class="graph-header">
                                 <div>
                                     <h2>Strongest signal graph</h2>
-                                    <p>Horizontal axis is simulation time. Vertical axis uses absolute signal value <code>|dBm|</code>.</p>
+                                    <p>Horizontal axis is simulation time. Vertical axis shows raw strongest-link power in dBm.</p>
                                 </div>
                             </div>
                             <canvas id="signalCanvas"></canvas>
-                            <p class="graph-note">Because the raw dBm values are negative, the graph uses <code>|dBm|</code>. Smaller values still mean a stronger raw signal.</p>
+                            <p class="graph-note">The graph uses the original negative dBm values and automatically rescales so the trace stays centered and easier to read.</p>
+                        </div>
+
+                        <div class="panel-card tracking-card">
+                            <div class="card-header">
+                                <h2>Current tracked satellite</h2>
+                                <p>This is the satellite currently providing the strongest visible signal.</p>
+                            </div>
+                            <div class="tracking-banner">
+                                <span>Tracking</span>
+                                <strong id="signalTrackingStat">None</strong>
+                            </div>
                         </div>
                     </section>
                 </div>

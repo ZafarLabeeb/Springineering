@@ -12,9 +12,10 @@ const stateStore = {
         earth: null,
     },
     signalHistory: [],
-    maxHistoryPoints: 500,
+    maxHistoryPoints: 600,
     pendingGroundStation: null,
-    groundStationDebounceId: null,
+    showOrbitLines: false,
+    orbitLineCache: [],
 };
 
 const canvas = document.getElementById("simCanvas");
@@ -23,6 +24,9 @@ const signalCanvas = document.getElementById("signalCanvas");
 const signalCtx = signalCanvas.getContext("2d");
 
 const satCountInput = document.getElementById("satCount");
+const altitudeSlider = document.getElementById("altitudeSlider");
+const randomAltitudeToggle = document.getElementById("randomAltitudeToggle");
+const orbitLinesToggle = document.getElementById("orbitLinesToggle");
 const physicsDtInput = document.getElementById("physicsDt");
 const simSpeedInput = document.getElementById("simSpeed");
 const stationLatitudeInput = document.getElementById("stationLatitude");
@@ -34,6 +38,8 @@ const deployButton = document.getElementById("deployButton");
 const pauseButton = document.getElementById("pauseButton");
 
 const satCountValue = document.getElementById("satCountValue");
+const altitudeValue = document.getElementById("altitudeValue");
+const altitudeModeHint = document.getElementById("altitudeModeHint");
 const physicsDtValue = document.getElementById("physicsDtValue");
 const simSpeedValue = document.getElementById("simSpeedValue");
 
@@ -44,15 +50,13 @@ const timeStat = document.getElementById("timeStat");
 const baseStationStat = document.getElementById("baseStationStat");
 const baseStatusStat = document.getElementById("baseStatusStat");
 const distanceStat = document.getElementById("distanceStat");
-
-const connectionBadge = document.getElementById("connectionBadge");
-const signalGraphLatest = document.getElementById("signalGraphLatest");
-const signalAbsStat = document.getElementById("signalAbsStat");
 const signalTrackingStat = document.getElementById("signalTrackingStat");
-const sampleCountStat = document.getElementById("sampleCountStat");
 
 const tabButtons = Array.from(document.querySelectorAll(".tab-btn"));
 const tabPanels = Array.from(document.querySelectorAll(".tab-panel"));
+
+const CAMERA_DISTANCE = 28.0e6;
+const ALTITUDE_VISUAL_GAIN = 1.85;
 
 function clamp(value, minValue, maxValue) {
     return Math.max(minValue, Math.min(maxValue, value));
@@ -65,10 +69,83 @@ function wrapLongitude(value) {
     return wrapped;
 }
 
+function vecLength(point) {
+    return Math.hypot(point.x, point.y, point.z);
+}
+
+function normalizePoint(point) {
+    const length = vecLength(point);
+    if (length < 1e-9) {
+        return { x: 0, y: 0, z: 1 };
+    }
+    return {
+        x: point.x / length,
+        y: point.y / length,
+        z: point.z / length,
+    };
+}
+
+function dotPoint(a, b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function crossPoint(a, b) {
+    return {
+        x: a.y * b.z - a.z * b.y,
+        y: a.z * b.x - a.x * b.z,
+        z: a.x * b.y - a.y * b.x,
+    };
+}
+
+function subtractPoint(a, b) {
+    return {
+        x: a.x - b.x,
+        y: a.y - b.y,
+        z: a.z - b.z,
+    };
+}
+
+function scalePoint(point, scalar) {
+    return {
+        x: point.x * scalar,
+        y: point.y * scalar,
+        z: point.z * scalar,
+    };
+}
+
+function addPoint(a, b) {
+    return {
+        x: a.x + b.x,
+        y: a.y + b.y,
+        z: a.z + b.z,
+    };
+}
+
 function updateSliderLabels() {
     satCountValue.textContent = String(satCountInput.value);
+    altitudeValue.textContent = `${Math.round(Number(altitudeSlider.value))} km`;
     physicsDtValue.textContent = `${Number(physicsDtInput.value).toFixed(1)} s`;
     simSpeedValue.textContent = `${parseInt(simSpeedInput.value, 10)}x`;
+
+    const randomMode = randomAltitudeToggle.checked;
+    altitudeSlider.disabled = randomMode;
+    altitudeModeHint.textContent = randomMode
+        ? "Random altitude mode is enabled. The altitude slider is ignored until you turn this off and deploy again."
+        : "With this off, every satellite uses the same altitude while orbital planes remain random.";
+}
+
+function syncSettingsFromState(state) {
+    if (!state || !state.settings) {
+        return;
+    }
+
+    const settings = state.settings;
+    const fixedAltitude = Number(settings.fixed_altitude_km);
+    altitudeSlider.min = String(settings.altitude_min_km);
+    altitudeSlider.max = String(settings.altitude_max_km);
+    altitudeSlider.value = String(fixedAltitude);
+    randomAltitudeToggle.checked = Boolean(settings.random_altitudes);
+    updateSliderLabels();
 }
 
 function setActiveTab(tabId) {
@@ -102,35 +179,48 @@ function syncBaseStationInputs(source) {
     if (source === "lat-range") {
         stationLatitudeNumber.value = Number(stationLatitudeInput.value).toFixed(1);
     } else if (source === "lat-number") {
-        const value = clamp(Number(stationLatitudeNumber.value || 0), -90, 90);
-        stationLatitudeNumber.value = Number.isFinite(value) ? value.toFixed(1) : "0.0";
+        const parsed = Number(stationLatitudeNumber.value);
+        if (!Number.isFinite(parsed)) {
+            return false;
+        }
+        const value = clamp(parsed, -90, 90);
+        stationLatitudeNumber.value = value.toFixed(1);
         stationLatitudeInput.value = String(Math.round(value));
     } else if (source === "lon-range") {
         stationLongitudeNumber.value = Number(stationLongitudeInput.value).toFixed(1);
     } else if (source === "lon-number") {
-        const rawValue = Number(stationLongitudeNumber.value || 0);
-        const value = Number.isFinite(rawValue) ? wrapLongitude(rawValue) : 0;
+        const parsed = Number(stationLongitudeNumber.value);
+        if (!Number.isFinite(parsed)) {
+            return false;
+        }
+        const value = wrapLongitude(parsed);
         stationLongitudeNumber.value = value.toFixed(1);
         stationLongitudeInput.value = String(Math.round(value));
     }
+    return true;
 }
 
-function scheduleGroundStationUpdate() {
-    const latitudeDeg = clamp(Number(stationLatitudeNumber.value), -90, 90);
-    const longitudeDeg = wrapLongitude(Number(stationLongitudeNumber.value));
-
-    stateStore.pendingGroundStation = {
-        latitude_deg: latitudeDeg,
-        longitude_deg: longitudeDeg,
-    };
-
-    if (stateStore.groundStationDebounceId !== null) {
-        window.clearTimeout(stateStore.groundStationDebounceId);
+function queueGroundStationUpdate() {
+    if (!stateStore.simState) {
+        return;
     }
 
-    stateStore.groundStationDebounceId = window.setTimeout(() => {
-        stateStore.groundStationDebounceId = null;
-    }, 120);
+    const latitudeDeg = Number(stationLatitudeNumber.value);
+    const longitudeDeg = Number(stationLongitudeNumber.value);
+    if (!Number.isFinite(latitudeDeg) || !Number.isFinite(longitudeDeg)) {
+        return;
+    }
+
+    const payload = {
+        latitude_deg: clamp(latitudeDeg, -90, 90),
+        longitude_deg: wrapLongitude(longitudeDeg),
+    };
+
+    const current = stateStore.simState.constants.ground_station;
+    const sameAsCurrent = Math.abs(payload.latitude_deg - current.latitude_deg) < 0.01
+        && Math.abs(payload.longitude_deg - current.longitude_deg) < 0.01;
+
+    stateStore.pendingGroundStation = sameAsCurrent ? null : payload;
 }
 
 function resizeCanvas() {
@@ -196,7 +286,6 @@ function recordSignalSample(state, reset = false) {
 
     const sample = {
         timeSeconds: Number(state.time_seconds || 0),
-        absDbm: state.best_signal_dbm === null ? null : Math.abs(Number(state.best_signal_dbm)),
         rawDbm: state.best_signal_dbm === null ? null : Number(state.best_signal_dbm),
     };
 
@@ -211,8 +300,6 @@ function recordSignalSample(state, reset = false) {
     if (history.length > stateStore.maxHistoryPoints) {
         history.splice(0, history.length - stateStore.maxHistoryPoints);
     }
-
-    sampleCountStat.textContent = String(history.length);
 }
 
 function updateStats(state) {
@@ -229,18 +316,6 @@ function updateStats(state) {
     distanceStat.textContent = state.tracked_link
         ? `${state.tracked_link.distance_km.toFixed(1)} km`
         : "--";
-
-    const connected = state.connection_status === "Connected";
-    connectionBadge.textContent = connected ? "Connected" : "No connection";
-    connectionBadge.classList.toggle("connected", connected);
-    connectionBadge.classList.toggle("disconnected", !connected);
-
-    signalGraphLatest.textContent = state.best_signal_dbm === null
-        ? "No connection"
-        : `${state.best_signal_dbm.toFixed(2)} dBm`;
-    signalAbsStat.textContent = state.best_signal_dbm === null
-        ? "--"
-        : Math.abs(state.best_signal_dbm).toFixed(2);
     signalTrackingStat.textContent = state.best_sat_name || "None";
 }
 
@@ -259,18 +334,17 @@ function rotatePoint(point) {
     return { x: x1, y: y2, z: z2 };
 }
 
-function projectPoint(point, modelScale, width, height) {
+function projectPoint(point, sceneScale, width, height) {
     const rotated = rotatePoint(point);
     const cx = width / 2;
     const cy = height / 2;
-    const cameraDistance = 8.0e6 / stateStore.zoom;
-    const depth = cameraDistance - rotated.z;
-    const safeDepth = Math.max(depth, 1.0e5);
-    const perspective = cameraDistance / safeDepth;
+    const depth = CAMERA_DISTANCE - rotated.z;
+    const safeDepth = Math.max(depth, 1.0e6);
+    const perspective = CAMERA_DISTANCE / safeDepth;
 
     return {
-        x: cx + rotated.x * modelScale * perspective,
-        y: cy - rotated.y * modelScale * perspective,
+        x: cx + rotated.x * sceneScale * perspective,
+        y: cy - rotated.y * sceneScale * perspective,
         z: rotated.z,
         perspective,
     };
@@ -369,13 +443,12 @@ function drawTexturedBody(cx, cy, radiusPx, textureImage, options = {}) {
     ctx.stroke();
 }
 
-function drawEarthBackdrop(width, height, moonRadiusPx, simTimeSeconds) {
+function drawEarthBackdrop(width, height, earthReferenceRadiusPx, simTimeSeconds) {
     const x = width * 0.77 + Math.sin(stateStore.cameraYaw * 0.8) * width * 0.045;
     const y = height * 0.24 + stateStore.cameraPitch * height * 0.05;
-    const radiusPx = moonRadiusPx * 0.54;
     const earthTextureOffset = simTimeSeconds / 12000;
 
-    drawTexturedBody(x, y, radiusPx, stateStore.textures.earth, {
+    drawTexturedBody(x, y, earthReferenceRadiusPx, stateStore.textures.earth, {
         textureOffset: earthTextureOffset,
         fallbackColors: [[0, "#d1ecff"], [0.3, "#5fa8ff"], [0.72, "#27627d"], [1, "#102030"]],
         rimColor: "rgba(170,220,255,0.24)",
@@ -383,29 +456,46 @@ function drawEarthBackdrop(width, height, moonRadiusPx, simTimeSeconds) {
     });
 }
 
-function drawGroundStationMarker(projected, connected) {
-    const radius = 7;
+function drawBaseStationModel(projected, connected, centerX, centerY) {
+    const outwardAngle = Math.atan2(projected.y - centerY, projected.x - centerX);
+    const rotation = outwardAngle + Math.PI / 2;
+    const scale = Math.max(0.85, projected.perspective * 1.05);
+
     ctx.save();
     ctx.translate(projected.x, projected.y);
+    ctx.rotate(rotation);
+    ctx.scale(scale, scale);
 
-    ctx.beginPath();
-    ctx.arc(0, 0, radius, 0, Math.PI * 2);
-    ctx.fillStyle = connected ? "#67f2ff" : "#44d6ff";
-    ctx.shadowBlur = 16;
-    ctx.shadowColor = "rgba(68, 214, 255, 0.75)";
-    ctx.fill();
+    ctx.shadowBlur = connected ? 16 : 10;
+    ctx.shadowColor = connected ? "rgba(68, 214, 255, 0.55)" : "rgba(68, 214, 255, 0.35)";
+
+    ctx.fillStyle = "#3a4658";
+    ctx.fillRect(-1.8, -13, 3.6, 13);
 
     ctx.shadowBlur = 0;
-    ctx.strokeStyle = "rgba(180, 245, 255, 0.95)";
-    ctx.lineWidth = 1.5;
+
+    ctx.fillStyle = "#c8d2df";
     ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(0, -12);
+    ctx.ellipse(0, -15.5, 8.5, 5.8, 0, Math.PI, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = "rgba(255,255,255,0.7)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.ellipse(0, -15.5, 8.5, 5.8, 0, Math.PI, Math.PI * 2);
     ctx.stroke();
 
+    ctx.fillStyle = "#ff9a34";
+    ctx.fillRect(-1.2, -22, 2.4, 7.5);
+
     ctx.beginPath();
-    ctx.arc(0, -14, 5.4, Math.PI * 0.14, Math.PI * 0.86);
-    ctx.stroke();
+    ctx.arc(0, 0, 3.8, 0, Math.PI * 2);
+    ctx.fillStyle = connected ? "#67f2ff" : "#44d6ff";
+    ctx.shadowBlur = 12;
+    ctx.shadowColor = "rgba(68, 214, 255, 0.7)";
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
     ctx.restore();
 }
 
@@ -426,7 +516,7 @@ function drawConnectionLine(fromPoint, toPoint) {
 }
 
 function drawSatelliteDot(projected, sat) {
-    const radius = Math.max(2.2, 3.6 * projected.perspective);
+    const radius = Math.max(2.2, 3.4 * projected.perspective);
     ctx.beginPath();
     ctx.arc(projected.x, projected.y, radius, 0, Math.PI * 2);
     ctx.fillStyle = sat.is_visible ? "#69f0a8" : "#ff6b6b";
@@ -434,6 +524,99 @@ function drawSatelliteDot(projected, sat) {
     ctx.shadowColor = ctx.fillStyle;
     ctx.fill();
     ctx.shadowBlur = 0;
+}
+
+function getVisualSatellitePoint(sat, moonRadiusM) {
+    const actualPoint = {
+        x: sat.position_m.x,
+        y: sat.position_m.y,
+        z: sat.position_m.z,
+    };
+    const direction = normalizePoint(actualPoint);
+    const visualRadius = moonRadiusM + Number(sat.altitude_km) * 1000 * ALTITUDE_VISUAL_GAIN;
+    return scalePoint(direction, visualRadius);
+}
+
+function buildOrbitLineCache(state) {
+    const moonRadiusM = state.constants.moon_radius_m;
+    stateStore.orbitLineCache = state.satellites.map((sat) => {
+        const normal = normalizePoint(sat.orbit_normal);
+        const currentPoint = getVisualSatellitePoint(sat, moonRadiusM);
+        let v1 = subtractPoint(currentPoint, scalePoint(normal, dotPoint(currentPoint, normal)));
+        if (vecLength(v1) < 1e-6) {
+            const fallback = Math.abs(normal.x) < 0.8
+                ? { x: 1, y: 0, z: 0 }
+                : { x: 0, y: 1, z: 0 };
+            v1 = subtractPoint(fallback, scalePoint(normal, dotPoint(fallback, normal)));
+        }
+        v1 = normalizePoint(v1);
+        const v2 = normalizePoint(crossPoint(normal, v1));
+        const orbitRadius = moonRadiusM + Number(sat.altitude_km) * 1000 * ALTITUDE_VISUAL_GAIN;
+
+        const points = [];
+        const segments = 64;
+        for (let i = 0; i <= segments; i += 1) {
+            const angle = (Math.PI * 2 * i) / segments;
+            const point = addPoint(
+                scalePoint(v1, orbitRadius * Math.cos(angle)),
+                scalePoint(v2, orbitRadius * Math.sin(angle))
+            );
+            points.push(point);
+        }
+
+        return {
+            satId: sat.sat_id,
+            points,
+        };
+    });
+}
+
+function isPointHiddenByMoon(projected, centerX, centerY, moonScreenRadius) {
+    const dx = projected.x - centerX;
+    const dy = projected.y - centerY;
+    const insideMoonDisk = Math.hypot(dx, dy) < moonScreenRadius * 0.975;
+    return insideMoonDisk && projected.z < 0;
+}
+
+function drawOrbitLines(sceneScale, width, height, centerX, centerY, moonScreenRadius) {
+    if (!stateStore.showOrbitLines || stateStore.orbitLineCache.length === 0) {
+        return;
+    }
+
+    ctx.save();
+    ctx.lineWidth = 1.15;
+    ctx.strokeStyle = "rgba(143, 184, 255, 0.18)";
+
+    for (const orbit of stateStore.orbitLineCache) {
+        let drawing = false;
+
+        for (const point of orbit.points) {
+            const projected = projectPoint(point, sceneScale, width, height);
+            const hidden = isPointHiddenByMoon(projected, centerX, centerY, moonScreenRadius);
+
+            if (hidden) {
+                if (drawing) {
+                    ctx.stroke();
+                    drawing = false;
+                }
+                continue;
+            }
+
+            if (!drawing) {
+                ctx.beginPath();
+                ctx.moveTo(projected.x, projected.y);
+                drawing = true;
+            } else {
+                ctx.lineTo(projected.x, projected.y);
+            }
+        }
+
+        if (drawing) {
+            ctx.stroke();
+        }
+    }
+
+    ctx.restore();
 }
 
 function render() {
@@ -449,12 +632,15 @@ function render() {
     }
 
     const moonRadiusM = state.constants.moon_radius_m;
-    const modelScale = (Math.min(width, height) * 0.18) / moonRadiusM;
-    const moonScreenRadius = moonRadiusM * modelScale;
+    const baseScale = (Math.min(width, height) * 0.18) / moonRadiusM;
+    const sceneScale = baseScale * stateStore.zoom;
+    const moonScreenRadius = moonRadiusM * sceneScale;
+    const baseMoonRadius = moonRadiusM * baseScale;
+    const earthScreenRadius = baseMoonRadius * 0.54;
     const centerX = width / 2;
     const centerY = height / 2;
 
-    drawEarthBackdrop(width, height, moonScreenRadius, state.time_seconds);
+    drawEarthBackdrop(width, height, earthScreenRadius, state.time_seconds);
 
     const moonTextureOffset = stateStore.cameraYaw / (Math.PI * 2);
     drawTexturedBody(centerX, centerY, moonScreenRadius, stateStore.textures.moon, {
@@ -463,27 +649,22 @@ function render() {
         rimColor: "rgba(255,255,255,0.12)",
     });
 
-    const projectedGround = projectPoint(state.constants.ground_station, modelScale, width, height);
+    drawOrbitLines(sceneScale, width, height, centerX, centerY, moonScreenRadius);
+
+    const projectedGround = projectPoint(state.constants.ground_station, sceneScale, width, height);
     const groundOnFront = projectedGround.z > 0;
 
     const projectedSats = state.satellites.map((sat) => {
-        const point = {
-            x: sat.position_m.x,
-            y: sat.position_m.y,
-            z: sat.position_m.z,
-        };
-        const projected = projectPoint(point, modelScale, width, height);
-        const dx = projected.x - centerX;
-        const dy = projected.y - centerY;
-        const insideMoonDisk = Math.hypot(dx, dy) < moonScreenRadius * 0.975;
-        const hiddenBehindMoon = insideMoonDisk && projected.z < 0;
+        const visualPoint = getVisualSatellitePoint(sat, moonRadiusM);
+        const projected = projectPoint(visualPoint, sceneScale, width, height);
+        const hiddenBehindMoon = isPointHiddenByMoon(projected, centerX, centerY, moonScreenRadius);
         return { sat, projected, hiddenBehindMoon };
     });
 
     projectedSats.sort((a, b) => a.projected.z - b.projected.z);
 
     if (groundOnFront) {
-        drawGroundStationMarker(projectedGround, state.connection_status === "Connected");
+        drawBaseStationModel(projectedGround, state.connection_status === "Connected", centerX, centerY);
     }
 
     const trackedSatellite = projectedSats.find((item) => item.sat.sat_id === state.best_sat_name);
@@ -499,7 +680,7 @@ function render() {
     }
 }
 
-function drawGraphGrid(width, height, plot) {
+function drawGraphGrid(plot, yMin, yMax, minTime, maxTime) {
     signalCtx.strokeStyle = "rgba(255,255,255,0.08)";
     signalCtx.lineWidth = 1;
 
@@ -512,6 +693,11 @@ function drawGraphGrid(width, height, plot) {
         signalCtx.moveTo(plot.left, y);
         signalCtx.lineTo(plot.left + plot.width, y);
         signalCtx.stroke();
+
+        const value = yMax - ((yMax - yMin) * i) / horizontalLines;
+        signalCtx.fillStyle = "#9eb0c8";
+        signalCtx.textAlign = "right";
+        signalCtx.fillText(value.toFixed(1), plot.left - 8, y + 4);
     }
 
     for (let i = 0; i <= verticalLines; i += 1) {
@@ -520,6 +706,11 @@ function drawGraphGrid(width, height, plot) {
         signalCtx.moveTo(x, plot.top);
         signalCtx.lineTo(x, plot.top + plot.height);
         signalCtx.stroke();
+
+        const timeValue = minTime + ((maxTime - minTime) * i) / verticalLines;
+        signalCtx.fillStyle = "#9eb0c8";
+        signalCtx.textAlign = "center";
+        signalCtx.fillText(timeValue.toFixed(0), x, plot.top + plot.height + 20);
     }
 }
 
@@ -537,15 +728,53 @@ function renderSignalGraph() {
     signalCtx.fillRect(0, 0, width, height);
 
     const plot = {
-        left: 52,
+        left: 58,
         right: 18,
         top: 18,
-        bottom: 36,
+        bottom: 38,
     };
     plot.width = width - plot.left - plot.right;
     plot.height = height - plot.top - plot.bottom;
 
-    drawGraphGrid(width, height, plot);
+    signalCtx.font = "12px Inter, Arial, sans-serif";
+
+    const history = stateStore.signalHistory;
+    if (history.length === 0) {
+        signalCtx.fillStyle = "#9eb0c8";
+        signalCtx.fillText("Waiting for signal data...", plot.left + 10, plot.top + 28);
+        return;
+    }
+
+    const allTimes = history.map((sample) => sample.timeSeconds);
+    const validSamples = history.filter((sample) => sample.rawDbm !== null);
+    const minTime = Math.min(...allTimes);
+    const maxTime = Math.max(minTime + 10, ...allTimes);
+
+    if (validSamples.length === 0) {
+        drawGraphGrid(plot, -140, -100, minTime, maxTime);
+        signalCtx.strokeStyle = "rgba(255,255,255,0.22)";
+        signalCtx.lineWidth = 1.3;
+        signalCtx.beginPath();
+        signalCtx.moveTo(plot.left, plot.top);
+        signalCtx.lineTo(plot.left, plot.top + plot.height);
+        signalCtx.lineTo(plot.left + plot.width, plot.top + plot.height);
+        signalCtx.stroke();
+
+        signalCtx.fillStyle = "#ff6b6b";
+        signalCtx.textAlign = "left";
+        signalCtx.fillText("No connected-signal samples yet.", plot.left + 10, plot.top + 28);
+        return;
+    }
+
+    const values = validSamples.map((sample) => sample.rawDbm);
+    let dataMin = Math.min(...values);
+    let dataMax = Math.max(...values);
+    const center = (dataMin + dataMax) / 2;
+    const halfRange = Math.max(4.0, (dataMax - dataMin) / 2 + 3.0);
+    dataMin = Math.floor(center - halfRange);
+    dataMax = Math.ceil(center + halfRange);
+
+    drawGraphGrid(plot, dataMin, dataMax, minTime, maxTime);
 
     signalCtx.strokeStyle = "rgba(255,255,255,0.22)";
     signalCtx.lineWidth = 1.3;
@@ -555,25 +784,9 @@ function renderSignalGraph() {
     signalCtx.lineTo(plot.left + plot.width, plot.top + plot.height);
     signalCtx.stroke();
 
-    const history = stateStore.signalHistory;
-    if (history.length === 0) {
-        signalCtx.fillStyle = "#9eb0c8";
-        signalCtx.font = "14px Inter, Arial, sans-serif";
-        signalCtx.fillText("Waiting for signal data...", plot.left + 10, plot.top + 28);
-        return;
-    }
-
-    const allTimes = history.map((sample) => sample.timeSeconds);
-    const validSamples = history.filter((sample) => sample.absDbm !== null);
-    const minTime = Math.min(...allTimes);
-    const maxTime = Math.max(minTime + 10, ...allTimes);
-    const maxAbs = validSamples.length > 0 ? Math.max(20, ...validSamples.map((sample) => sample.absDbm)) : 20;
-    const yMax = Math.ceil(maxAbs * 1.12);
-
     const toX = (timeValue) => plot.left + ((timeValue - minTime) / (maxTime - minTime || 1)) * plot.width;
-    const toY = (absDbmValue) => plot.top + plot.height - (absDbmValue / yMax) * plot.height;
+    const toY = (signalValue) => plot.top + ((dataMax - signalValue) / (dataMax - dataMin || 1)) * plot.height;
 
-    signalCtx.font = "12px Inter, Arial, sans-serif";
     signalCtx.fillStyle = "#9eb0c8";
     signalCtx.textAlign = "center";
     signalCtx.fillText("Simulation time (s)", plot.left + plot.width / 2, height - 10);
@@ -581,22 +794,8 @@ function renderSignalGraph() {
     signalCtx.save();
     signalCtx.translate(16, plot.top + plot.height / 2);
     signalCtx.rotate(-Math.PI / 2);
-    signalCtx.fillText("Absolute signal |dBm|", 0, 0);
+    signalCtx.fillText("Strongest signal (dBm)", 0, 0);
     signalCtx.restore();
-
-    signalCtx.textAlign = "right";
-    signalCtx.fillText("0", plot.left - 8, plot.top + plot.height + 4);
-    signalCtx.fillText(String(yMax), plot.left - 8, plot.top + 4);
-    signalCtx.textAlign = "center";
-    signalCtx.fillText(minTime.toFixed(0), plot.left, plot.top + plot.height + 20);
-    signalCtx.fillText(maxTime.toFixed(0), plot.left + plot.width, plot.top + plot.height + 20);
-
-    if (validSamples.length === 0) {
-        signalCtx.fillStyle = "#ff6b6b";
-        signalCtx.textAlign = "left";
-        signalCtx.fillText("No connected-signal samples yet.", plot.left + 10, plot.top + 28);
-        return;
-    }
 
     signalCtx.save();
     signalCtx.beginPath();
@@ -614,7 +813,7 @@ function renderSignalGraph() {
         signalCtx.beginPath();
         segment.forEach((sample, index) => {
             const x = toX(sample.timeSeconds);
-            const y = toY(sample.absDbm);
+            const y = toY(sample.rawDbm);
             if (index === 0) {
                 signalCtx.moveTo(x, y);
             } else {
@@ -624,16 +823,14 @@ function renderSignalGraph() {
         signalCtx.stroke();
 
         const last = segment[segment.length - 1];
-        const lx = toX(last.timeSeconds);
-        const ly = toY(last.absDbm);
         signalCtx.beginPath();
-        signalCtx.arc(lx, ly, 3.8, 0, Math.PI * 2);
+        signalCtx.arc(toX(last.timeSeconds), toY(last.rawDbm), 3.8, 0, Math.PI * 2);
         signalCtx.fillStyle = "#ffd66b";
         signalCtx.fill();
     };
 
     for (const sample of history) {
-        if (sample.absDbm === null) {
+        if (sample.rawDbm === null) {
             drawSegment(currentSegment);
             currentSegment = [];
             continue;
@@ -646,11 +843,16 @@ function renderSignalGraph() {
 }
 
 async function deployFleet() {
+    stateStore.pendingGroundStation = null;
     stateStore.inFlight = true;
     try {
         stateStore.simState = await postJson("/api/deploy", {
             num_sats: parseInt(satCountInput.value, 10),
+            altitude_mode: randomAltitudeToggle.checked ? "random" : "fixed",
+            fixed_altitude_km: Number(altitudeSlider.value),
         });
+        syncSettingsFromState(stateStore.simState);
+        buildOrbitLineCache(stateStore.simState);
         updateStats(stateStore.simState);
         recordSignalSample(stateStore.simState, true);
         setBaseStationControls(
@@ -665,7 +867,7 @@ async function deployFleet() {
 }
 
 async function processPendingGroundStation() {
-    if (stateStore.inFlight || stateStore.pendingGroundStation === null || stateStore.groundStationDebounceId !== null) {
+    if (stateStore.inFlight || stateStore.pendingGroundStation === null) {
         return;
     }
 
@@ -757,7 +959,7 @@ function setupPointerControls() {
         event.preventDefault();
         const zoomDelta = event.deltaY > 0 ? 0.92 : 1.08;
         stateStore.zoom *= zoomDelta;
-        stateStore.zoom = clamp(stateStore.zoom, 0.5, 2.8);
+        stateStore.zoom = clamp(stateStore.zoom, 0.55, 2.7);
     }, { passive: false });
 }
 
@@ -801,28 +1003,32 @@ async function loadTextures() {
 function setupBaseStationControls() {
     stationLatitudeInput.addEventListener("input", () => {
         syncBaseStationInputs("lat-range");
-        scheduleGroundStationUpdate();
+        queueGroundStationUpdate();
     });
     stationLatitudeNumber.addEventListener("input", () => {
-        syncBaseStationInputs("lat-number");
-        scheduleGroundStationUpdate();
+        if (syncBaseStationInputs("lat-number")) {
+            queueGroundStationUpdate();
+        }
     });
     stationLongitudeInput.addEventListener("input", () => {
         syncBaseStationInputs("lon-range");
-        scheduleGroundStationUpdate();
+        queueGroundStationUpdate();
     });
     stationLongitudeNumber.addEventListener("input", () => {
-        syncBaseStationInputs("lon-number");
-        scheduleGroundStationUpdate();
+        if (syncBaseStationInputs("lon-number")) {
+            queueGroundStationUpdate();
+        }
     });
 
     stationLatitudeNumber.addEventListener("blur", () => {
-        syncBaseStationInputs("lat-number");
-        scheduleGroundStationUpdate();
+        if (syncBaseStationInputs("lat-number")) {
+            queueGroundStationUpdate();
+        }
     });
     stationLongitudeNumber.addEventListener("blur", () => {
-        syncBaseStationInputs("lon-number");
-        scheduleGroundStationUpdate();
+        if (syncBaseStationInputs("lon-number")) {
+            queueGroundStationUpdate();
+        }
     });
 }
 
@@ -841,6 +1047,11 @@ async function initialize() {
     setupTabs();
 
     satCountInput.addEventListener("input", updateSliderLabels);
+    altitudeSlider.addEventListener("input", updateSliderLabels);
+    randomAltitudeToggle.addEventListener("change", updateSliderLabels);
+    orbitLinesToggle.addEventListener("change", () => {
+        stateStore.showOrbitLines = orbitLinesToggle.checked;
+    });
     physicsDtInput.addEventListener("input", updateSliderLabels);
     simSpeedInput.addEventListener("input", updateSliderLabels);
 
@@ -861,6 +1072,8 @@ async function initialize() {
 
     await loadTextures();
     stateStore.simState = await getJson("/api/state");
+    syncSettingsFromState(stateStore.simState);
+    buildOrbitLineCache(stateStore.simState);
     updateStats(stateStore.simState);
     setBaseStationControls(
         stateStore.simState.constants.ground_station.latitude_deg,
@@ -873,8 +1086,5 @@ async function initialize() {
 
 initialize().catch((error) => {
     console.error(error);
-    connectionBadge.textContent = "Backend unreachable";
-    connectionBadge.classList.remove("connected");
-    connectionBadge.classList.add("disconnected");
-    signalGraphLatest.textContent = "Backend unreachable";
+    signalTrackingStat.textContent = "Backend unreachable";
 });

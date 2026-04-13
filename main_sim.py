@@ -19,6 +19,7 @@ G_T = 2.0
 G_R = 2.0
 
 ALT_RANGE_KM = (500.0, 2000.0)
+DEFAULT_FIXED_ALTITUDE_KM = 1200.0
 MAX_SATS = 500
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -42,12 +43,17 @@ class LunarSimulation:
     def __init__(self):
         self.time_seconds = 0.0
         self.fleet = []
+
         self.base_station_lat_deg = 90.0
         self.base_station_lon_deg = 0.0
         self.ground_station_normal = np.array([0.0, 0.0, 1.0], dtype=float)
         self.ground_station_pos = self.ground_station_normal * R_MOON
+
+        self.random_altitudes = False
+        self.fixed_altitude_km = DEFAULT_FIXED_ALTITUDE_KM
+
         self.set_ground_station(self.base_station_lat_deg, self.base_station_lon_deg)
-        self.deploy(100)
+        self.deploy(100, altitude_mode="fixed", fixed_altitude_km=self.fixed_altitude_km)
 
     def set_ground_station(self, latitude_deg=None, longitude_deg=None):
         if latitude_deg is not None:
@@ -75,17 +81,34 @@ class LunarSimulation:
                 FREQ_HZ,
             )
 
-    def deploy(self, num_sats):
+    def deploy(self, num_sats, altitude_mode=None, fixed_altitude_km=None):
         num_sats = int(clamp(int(num_sats), 1, MAX_SATS))
+
+        if altitude_mode is not None:
+            self.random_altitudes = str(altitude_mode).lower() == "random"
+
+        if fixed_altitude_km is not None:
+            self.fixed_altitude_km = float(clamp(float(fixed_altitude_km), ALT_RANGE_KM[0], ALT_RANGE_KM[1]))
+
         self.time_seconds = 0.0
         self.fleet = []
 
         for i in range(num_sats):
             name = f"Sat-{i + 1:03d}"
             n_vec = [random.uniform(-1.0, 1.0) for _ in range(3)]
-            alt = random.uniform(*ALT_RANGE_KM)
             theta = random.uniform(0.0, 360.0)
-            sat = Satellite(sat_id=name, n_vec=n_vec, altitude_km=alt, theta_deg=theta)
+            altitude_km = (
+                random.uniform(*ALT_RANGE_KM)
+                if self.random_altitudes
+                else self.fixed_altitude_km
+            )
+
+            sat = Satellite(
+                sat_id=name,
+                n_vec=n_vec,
+                altitude_km=altitude_km,
+                theta_deg=theta,
+            )
             self.fleet.append(sat)
 
         self._refresh_comms()
@@ -128,6 +151,12 @@ class LunarSimulation:
             "best_signal_dbm": None if best_sat is None else round(best_sat.signal_dbm, 3),
             "connection_status": "Connected" if best_sat is not None else "No connection",
             "tracked_link": tracked_link,
+            "settings": {
+                "random_altitudes": bool(self.random_altitudes),
+                "fixed_altitude_km": round(self.fixed_altitude_km, 3),
+                "altitude_min_km": ALT_RANGE_KM[0],
+                "altitude_max_km": ALT_RANGE_KM[1],
+            },
             "constants": {
                 "moon_radius_m": R_MOON,
                 "ground_station": {
@@ -217,11 +246,23 @@ class SimulatorRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/api/deploy":
             num_sats = payload.get("num_sats", 100)
+            altitude_mode = payload.get("altitude_mode", "fixed")
+            fixed_altitude_km = payload.get("fixed_altitude_km", simulation.fixed_altitude_km)
             try:
                 num_sats = int(num_sats)
             except (TypeError, ValueError):
                 num_sats = 100
-            self._send_json(simulation.deploy(num_sats))
+            try:
+                fixed_altitude_km = float(fixed_altitude_km)
+            except (TypeError, ValueError):
+                fixed_altitude_km = simulation.fixed_altitude_km
+            self._send_json(
+                simulation.deploy(
+                    num_sats=num_sats,
+                    altitude_mode=altitude_mode,
+                    fixed_altitude_km=fixed_altitude_km,
+                )
+            )
             return
 
         if path == "/api/step":
@@ -255,7 +296,7 @@ class SimulatorRequestHandler(BaseHTTPRequestHandler):
 
 def run_console_simulation(num_sats=50, dt=100.0, total_steps=10):
     sim = LunarSimulation()
-    sim.deploy(num_sats)
+    sim.deploy(num_sats, altitude_mode="fixed", fixed_altitude_km=sim.fixed_altitude_km)
 
     print("=== LUNAR CONSTELLATION SETUP ===")
     print(f"Satellites: {num_sats}")
@@ -263,7 +304,10 @@ def run_console_simulation(num_sats=50, dt=100.0, total_steps=10):
     print(f"Steps: {total_steps}")
     print(
         f"Base station: lat {sim.base_station_lat_deg:.1f}°, "
-        f"lon {sim.base_station_lon_deg:.1f}°\n"
+        f"lon {sim.base_station_lon_deg:.1f}°"
+    )
+    print(
+        f"Altitude mode: {'random' if sim.random_altitudes else f'fixed at {sim.fixed_altitude_km:.1f} km'}\n"
     )
 
     for _ in range(total_steps):
